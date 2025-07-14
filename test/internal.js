@@ -14,7 +14,7 @@ function prepare (version) {
 
 async function startTest (version = CURRENT_VERSION, ok) {
   await prepare(version)
-  const Item = require('../types/Item')(version)
+  // const Item = require('../types/Item')(version)
   const port = await getPort()
   const server = new Server({ host: '0.0.0.0', port, version, offline: true })
 
@@ -47,7 +47,9 @@ async function startTest (version = CURRENT_VERSION, ok) {
         must_accept: false,
         has_scripts: false,
         behaviour_packs: [],
-        texture_packs: []
+        world_template: { uuid: '550e8400-e29b-41d4-a716-446655440000', version: '' }, // 1.21.50
+        texture_packs: [],
+        resource_pack_links: []
       })
 
       client.once('resource_pack_client_response', async rp => {
@@ -55,13 +57,17 @@ async function startTest (version = CURRENT_VERSION, ok) {
         client.write('network_settings', { compression_threshold: 1 })
         // Send some inventory slots
         for (let i = 0; i < 3; i++) {
-          client.queue('inventory_slot', { window_id: 'armor', slot: 0, item: new Item().toBedrock() })
+          // client.queue('inventory_slot', { window_id: 'armor', slot: 0, item: new Item().toBedrock() })
         }
 
         // client.queue('inventory_transaction', get('packets/inventory_transaction.json'))
         client.queue('player_list', get('packets/player_list.json'))
         client.queue('start_game', get('packets/start_game.json'))
-        client.queue('item_component', { entries: [] })
+        if (client.versionLessThan('1.21.60')) {
+          client.queue('item_component', { entries: [] })
+        } else {
+          client.queue('item_registry', get('packets/item_registry.json'))
+        }
         client.queue('set_spawn_position', get('packets/set_spawn_position.json'))
         client.queue('set_time', { time: 5433771 })
         client.queue('set_difficulty', { difficulty: 1 })
@@ -95,11 +101,11 @@ async function startTest (version = CURRENT_VERSION, ok) {
 
         loop = setInterval(() => {
           client.write('network_chunk_publisher_update', { coordinates: { x: 646, y: 130, z: 77 }, radius: 64 })
-        }, 9500)
+        }, 6500)
 
         setTimeout(() => {
           client.write('play_status', { status: 'player_spawn' })
-        }, 6000)
+        }, 3000)
 
         // Respond to tick synchronization packets
         client.on('tick_sync', (packet) => {

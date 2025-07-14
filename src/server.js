@@ -15,6 +15,7 @@ class Server extends EventEmitter {
 
     this.RakServer = require('./rak')(this.options.raknetBackend).RakServer
 
+    this._loadFeatures(this.options.version)
     this.serializer = createSerializer(this.options.version)
     this.deserializer = createDeserializer(this.options.version)
     this.advertisement = new ServerAdvertisement(this.options.motd, this.options.port, this.options.version)
@@ -23,8 +24,21 @@ class Server extends EventEmitter {
     this.clients = {}
     this.clientCount = 0
     this.conLog = debug
+    this.batchHeader = 0xfe
 
     this.setCompressor(this.options.compressionAlgorithm, this.options.compressionLevel, this.options.compressionThreshold)
+  }
+
+  _loadFeatures (version) {
+    try {
+      const mcData = require('minecraft-data')('bedrock_' + version)
+      this.features = {
+        compressorInHeader: mcData.supportFeature('compressorInPacketHeader'),
+        newLoginIdentityFields: mcData.supportFeature('newLoginIdentityFields')
+      }
+    } catch (e) {
+      throw new Error(`Unsupported version: '${version}', no data available`)
+    }
   }
 
   setCompressor (algorithm, level = 1, threshold = 256) {
@@ -32,16 +46,19 @@ class Server extends EventEmitter {
       case 'none':
         this.compressionAlgorithm = 'none'
         this.compressionLevel = 0
+        this.compressionHeader = 255
         break
       case 'deflate':
         this.compressionAlgorithm = 'deflate'
         this.compressionLevel = level
         this.compressionThreshold = threshold
+        this.compressionHeader = 0
         break
       case 'snappy':
         this.compressionAlgorithm = 'snappy'
         this.compressionLevel = level
         this.compressionThreshold = threshold
+        this.compressionHeader = 1
         break
       default:
         throw new Error(`Unknown compression algorithm: ${algorithm}`)
@@ -73,12 +90,10 @@ class Server extends EventEmitter {
     this.emit('connect', player)
   }
 
-  onCloseConnection = (inetAddr, reason) => {
-    this.conLog('Connection closed: ', inetAddr?.address, reason)
-
-    delete this.clients[inetAddr]?.connection // Prevent close loop
-    this.clients[inetAddr?.address ?? inetAddr]?.close()
-    delete this.clients[inetAddr]
+  onCloseConnection = (conn, reason) => {
+    this.conLog('Connection closed: ', conn.address, reason)
+    this.clients[conn.address]?.close()
+    delete this.clients[conn.address]
     this.clientCount--
   }
 
@@ -102,8 +117,9 @@ class Server extends EventEmitter {
     return this.advertisement
   }
 
-  async listen (host = this.options.host, port = this.options.port) {
-    this.raknet = new this.RakServer({ host, port }, this)
+  async listen () {
+    const { host, port, maxPlayers } = this.options
+    this.raknet = new this.RakServer({ host, port, maxPlayers }, this)
 
     try {
       await this.raknet.listen()

@@ -142,7 +142,7 @@ client.on('text', (packet) => {
 // names and as explained in the "Protocol doc" section below, fields are all case sensitive!
 client.on('add_player', (packet) => {
   client.queue('text', {
-    type: 'chat', needs_translation: false, source_name: client.username, xuid: '', platform_chat_id: '',
+    type: 'chat', needs_translation: false, source_name: client.username, xuid: '', platform_chat_id: '', filtered_message: '',
     message: `Hey, ${packet.username} just joined!`
   })
 })
@@ -206,15 +206,21 @@ relay.on('connect', player => {
   console.log('New connection', player.connection.address)
 
   // Server is sending a message to the client.
-  player.on('clientbound', ({ name, params }) => {
+  player.on('clientbound', ({ name, params }, des) => {
     if (name === 'disconnect') { // Intercept kick
       params.message = 'Intercepted' // Change kick message to "Intercepted"
     }
   })
   // Client is sending a message to the server
-  player.on('serverbound', ({ name, params }) => {
+  player.on('serverbound', ({ name, params }, des) => {
     if (name === 'text') { // Intercept chat message to server and append time.
       params.message += `, on ${new Date().toLocaleString()}`
+    }
+    
+    if (name === 'command_request') { // Intercept command request to server and cancel if its "/test"
+      if (params.command == "/test") {
+        des.canceled = true
+      }
     }
   })
 })

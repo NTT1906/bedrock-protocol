@@ -26,6 +26,7 @@ class Client extends Connection {
     this.compressionAlgorithm = this.versionGreaterThanOrEqualTo('1.19.30') ? 'none' : 'deflate'
     this.compressionThreshold = 512
     this.compressionLevel = this.options.compressionLevel
+    this.batchHeader = 0xfe
 
     if (isDebug) {
       this.inLog = (...args) => debug('C ->', ...args)
@@ -42,6 +43,7 @@ class Client extends Connection {
     this.validateOptions()
     this.serializer = createSerializer(this.options.version)
     this.deserializer = createDeserializer(this.options.version)
+    this._loadFeatures()
 
     KeyExchange(this, null, this.options)
     Login(this, null, this.options)
@@ -53,6 +55,19 @@ class Client extends Connection {
     this.connection = new RakClient({ useWorkers: this.options.useRaknetWorkers, host, port }, this)
 
     this.emit('connect_allowed')
+  }
+
+  _loadFeatures () {
+    try {
+      const mcData = require('minecraft-data')('bedrock_' + this.options.version)
+      this.features = {
+        compressorInHeader: mcData.supportFeature('compressorInPacketHeader'),
+        itemRegistryPacket: mcData.supportFeature('itemRegistryPacket'),
+        newLoginIdentityFields: mcData.supportFeature('newLoginIdentityFields')
+      }
+    } catch (e) {
+      throw new Error(`Unsupported version: '${this.options.version}', no data available`)
+    }
   }
 
   connect () {
@@ -120,6 +135,7 @@ class Client extends Connection {
   updateCompressorSettings (packet) {
     this.compressionAlgorithm = packet.compression_algorithm || 'deflate'
     this.compressionThreshold = packet.compression_threshold
+    this.compressionReady = true
   }
 
   sendLogin () {
@@ -131,9 +147,18 @@ class Client extends Connection {
       ...this.accessToken // Mojang + Xbox JWT from auth
     ]
 
-    const encodedChain = JSON.stringify({ chain })
-
-    debug('Auth chain', chain)
+    let encodedChain
+    if (this.features.newLoginIdentityFields) { // 1.21.90+
+      encodedChain = JSON.stringify({
+        Certificate: JSON.stringify({ chain }),
+        // 0 = normal, 1 = ss, 2 = offline
+        AuthenticationType: this.options.offline ? 2 : 0,
+        Token: ''
+      })
+    } else {
+      encodedChain = JSON.stringify({ chain })
+    }
+    debug('Auth chain', encodedChain)
 
     this.write('login', {
       protocol_version: this.options.protocolVersion,
@@ -170,7 +195,8 @@ class Client extends Connection {
     if (this.status === ClientStatus.Disconnected) return
     this.write('disconnect', {
       hide_disconnect_screen: hide,
-      message: reason
+      message: reason,
+      filtered_message: ''
     })
     this.close(reason)
   }
@@ -226,7 +252,9 @@ class Client extends Connection {
         break
       case 'start_game':
         this.startGameData = pakData.params
-        this.startGameData.itemstates.forEach(state => {
+        // fallsthrough
+      case 'item_registry': // 1.21.60+ send itemstates in item_registry packet
+        pakData.params.itemstates?.forEach(state => {
           if (state.name === 'minecraft:shield') {
             this.serializer.proto.setVariable('ShieldItemID', state.runtime_id)
             this.deserializer.proto.setVariable('ShieldItemID', state.runtime_id)

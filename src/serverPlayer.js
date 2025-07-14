@@ -10,6 +10,7 @@ class Player extends Connection {
   constructor (server, connection) {
     super()
     this.server = server
+    this.features = server.features
     this.serializer = server.serializer
     this.deserializer = server.deserializer
     this.connection = connection
@@ -23,14 +24,16 @@ class Player extends Connection {
     this.status = ClientStatus.Authenticating
 
     if (isDebug) {
-      this.inLog = (...args) => debug('S ->', ...args)
-      this.outLog = (...args) => debug('S <-', ...args)
+      this.inLog = (...args) => debug('-> S', ...args)
+      this.outLog = (...args) => debug('<- S', ...args)
     }
 
+    this.batchHeader = this.server.batchHeader
     // Compression is server-wide
     this.compressionAlgorithm = this.server.compressionAlgorithm
     this.compressionLevel = this.server.compressionLevel
     this.compressionThreshold = this.server.compressionThreshold
+    this.compressionHeader = this.server.compressionHeader
 
     this._sentNetworkSettings = false // 1.19.30+
   }
@@ -48,6 +51,7 @@ class Player extends Connection {
       client_throttle_scalar: 0
     })
     this._sentNetworkSettings = true
+    this.compressionReady = true
   }
 
   handleClientProtocolVersion (clientVersion) {
@@ -74,11 +78,18 @@ class Player extends Connection {
 
     // Parse login data
     const tokens = body.params.tokens
-    const authChain = JSON.parse(tokens.identity)
-    const skinChain = tokens.client
-
     try {
-      var { key, userData, skinData } = this.decodeLoginJWT(authChain.chain, skinChain) // eslint-disable-line
+      const skinChain = tokens.client
+      const authChain = JSON.parse(tokens.identity)
+      let chain
+      if (authChain.Certificate) { // 1.21.90+
+        chain = JSON.parse(authChain.Certificate).chain
+      } else if (authChain.chain) {
+        chain = authChain.chain
+      } else {
+        throw new Error('Invalid login packet: missing chain or Certificate')
+      }
+      var { key, userData, skinData } = this.decodeLoginJWT(chain, skinChain) // eslint-disable-line
     } catch (e) {
       debug(this.address, e)
       this.disconnect('Server authentication error')
@@ -115,7 +126,8 @@ class Player extends Connection {
     if (this.status === ClientStatus.Disconnected) return
     this.write('disconnect', {
       hide_disconnect_screen: hide,
-      message: reason
+      message: reason,
+      filtered_message: ''
     })
     this.server.conLog('Kicked ', this.connection?.address, reason)
     setTimeout(() => this.close('kick'), 100) // Allow time for message to be recieved.
@@ -152,7 +164,7 @@ class Player extends Connection {
       return
     }
 
-    this.inLog?.(des.data.name, serialize(des.data.params).slice(0, 200))
+    this.inLog?.(des.data.name, serialize(des.data.params))
 
     switch (des.data.name) {
       // This is the first packet on 1.19.30 & above
